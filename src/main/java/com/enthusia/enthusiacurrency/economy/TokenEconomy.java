@@ -11,12 +11,15 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class TokenEconomy implements Economy {
 
     private final EnthusiaCurrencyPlugin plugin;
     private final BalanceStorage storage;
     private final CurrencyManager currencyManager;
+    private final ConcurrentHashMap<UUID, Object> uuidLocks = new ConcurrentHashMap<>();
 
     public TokenEconomy(EnthusiaCurrencyPlugin plugin, BalanceStorage storage, CurrencyManager currencyManager) {
         this.plugin = plugin;
@@ -30,6 +33,10 @@ public class TokenEconomy implements Economy {
     private static long toLong(double amount) {
         if (Double.isNaN(amount) || Double.isInfinite(amount) || amount < 0) return -1;
         return (long) Math.floor(amount);
+    }
+
+    private Object lockFor(UUID uuid) {
+        return uuidLocks.computeIfAbsent(uuid, k -> new Object());
     }
 
     @Override
@@ -138,59 +145,71 @@ public class TokenEconomy implements Economy {
 
     @Override
     public EconomyResponse withdrawPlayer(OfflinePlayer offlinePlayer, double amount) {
-        long amt = toLong(amount);
-        if (amt < 0) {
-            return new EconomyResponse(0, getBalance(offlinePlayer),
-                    EconomyResponse.ResponseType.FAILURE, "Invalid amount.");
-        }
-        if (amt == 0) {
-            return new EconomyResponse(0, getBalance(offlinePlayer),
-                    EconomyResponse.ResponseType.SUCCESS, null);
-        }
-
-        Player player = offlinePlayer.getPlayer();
-
-        if (player != null && player.isOnline()) {
-            long bank = storage.getBalance(offlinePlayer.getUniqueId());
-            int items = CurrencyUtils.countCurrencyInPlayer(currencyManager, player);
-            long total = bank + items;
-
-            if (total < amt) {
-                return new EconomyResponse(0, (double) total, EconomyResponse.ResponseType.FAILURE, "Not enough funds.");
-            }
-
-            if (bank >= amt) {
-                storage.withdraw(offlinePlayer.getUniqueId(), amt);
-            } else {
-                // Need items too — remove items FIRST, then zero bank (C2 fix)
-                long fromItems = amt - bank;
-                int toRemove = (int) fromItems;
-                int removed = CurrencyUtils.removeCurrencyFromPlayer(currencyManager, player, toRemove);
-                if (removed < toRemove) {
-                    // Item removal failed — bank untouched, no rollback needed
-                    return new EconomyResponse(0, getBalance(offlinePlayer),
-                            EconomyResponse.ResponseType.FAILURE, "Could not remove enough tokens from items.");
-                }
-                // Items removed successfully — now zero bank
-                storage.setBalance(offlinePlayer.getUniqueId(), 0L);
-                // Refund overshoot
-                if (removed > toRemove) {
-                    storage.deposit(offlinePlayer.getUniqueId(), (long) (removed - toRemove));
-                }
-            }
-
-            plugin.getBaltopTracker().refreshTop3();
-            return new EconomyResponse(amount, getBalance(offlinePlayer),
-                    EconomyResponse.ResponseType.SUCCESS, null);
-        } else {
-            boolean success = storage.withdraw(offlinePlayer.getUniqueId(), amt);
-            if (!success) {
+        UUID uuid = offlinePlayer.getUniqueId();
+        synchronized (lockFor(uuid)) {
+            long amt = toLong(amount);
+            if (amt < 0) {
                 return new EconomyResponse(0, getBalance(offlinePlayer),
-                        EconomyResponse.ResponseType.FAILURE, "Not enough bank funds (offline).");
+                        EconomyResponse.ResponseType.FAILURE, "Invalid amount.");
             }
-            plugin.getBaltopTracker().refreshTop3();
-            return new EconomyResponse(amount, getBalance(offlinePlayer),
-                    EconomyResponse.ResponseType.SUCCESS, null);
+            if (amt == 0) {
+                return new EconomyResponse(0, getBalance(offlinePlayer),
+                        EconomyResponse.ResponseType.SUCCESS, null);
+            }
+
+            Player player = offlinePlayer.getPlayer();
+
+            if (player != null && player.isOnline()) {
+                long bank = storage.getBalance(uuid);
+                int items = CurrencyUtils.countCurrencyInPlayer(currencyManager, player);
+                long total = bank + items;
+
+                if (total < amt) {
+                    return new EconomyResponse(0, (double) total, EconomyResponse.ResponseType.FAILURE, "Not enough funds.");
+                }
+
+                if (bank >= amt) {
+                    if (!storage.withdraw(uuid, amt)) {
+                        return new EconomyResponse(0, getBalance(offlinePlayer),
+                                EconomyResponse.ResponseType.FAILURE, "Not enough funds.");
+                    }
+                } else {
+                    // Need items too — remove items FIRST, then zero bank (C2 fix)
+                    long fromItems = amt - bank;
+                    if (fromItems > Integer.MAX_VALUE) {
+                        return new EconomyResponse(0, getBalance(offlinePlayer),
+                                EconomyResponse.ResponseType.FAILURE, "Amount too large for item withdrawal.");
+                    }
+                    int toRemove = (int) fromItems;
+                    int removed = CurrencyUtils.removeCurrencyFromPlayer(currencyManager, player, toRemove);
+                    if (removed < toRemove) {
+                        // Item removal failed — bank untouched, no rollback needed
+                        return new EconomyResponse(0, getBalance(offlinePlayer),
+                                EconomyResponse.ResponseType.FAILURE, "Could not remove enough tokens from items.");
+                    }
+                    // Items removed successfully — now zero bank
+                    storage.setBalance(uuid, 0L);
+                    // Refund overshoot
+                    if (removed > toRemove) {
+                        storage.deposit(uuid, (long) (removed - toRemove));
+                    }
+                }
+
+                storage.saveSingle(uuid);
+                plugin.getBaltopTracker().refreshTop3();
+                return new EconomyResponse(amount, getBalance(offlinePlayer),
+                        EconomyResponse.ResponseType.SUCCESS, null);
+            } else {
+                boolean success = storage.withdraw(uuid, amt);
+                if (!success) {
+                    return new EconomyResponse(0, getBalance(offlinePlayer),
+                            EconomyResponse.ResponseType.FAILURE, "Not enough bank funds (offline).");
+                }
+                storage.saveSingle(uuid);
+                plugin.getBaltopTracker().refreshTop3();
+                return new EconomyResponse(amount, getBalance(offlinePlayer),
+                        EconomyResponse.ResponseType.SUCCESS, null);
+            }
         }
     }
 
@@ -211,15 +230,19 @@ public class TokenEconomy implements Economy {
 
     @Override
     public EconomyResponse depositPlayer(OfflinePlayer offlinePlayer, double amount) {
-        long amt = toLong(amount);
-        if (amt <= 0) {
-            return new EconomyResponse(0, getBalance(offlinePlayer),
-                    EconomyResponse.ResponseType.FAILURE, "Invalid amount.");
+        UUID uuid = offlinePlayer.getUniqueId();
+        synchronized (lockFor(uuid)) {
+            long amt = toLong(amount);
+            if (amt <= 0) {
+                return new EconomyResponse(0, getBalance(offlinePlayer),
+                        EconomyResponse.ResponseType.FAILURE, "Invalid amount.");
+            }
+            storage.deposit(uuid, amt);
+            storage.saveSingle(uuid);
+            plugin.getBaltopTracker().refreshTop3();
+            return new EconomyResponse(amount, getBalance(offlinePlayer),
+                    EconomyResponse.ResponseType.SUCCESS, null);
         }
-        storage.deposit(offlinePlayer.getUniqueId(), amt);
-        plugin.getBaltopTracker().refreshTop3();
-        return new EconomyResponse(amount, getBalance(offlinePlayer),
-                EconomyResponse.ResponseType.SUCCESS, null);
     }
 
     @Override

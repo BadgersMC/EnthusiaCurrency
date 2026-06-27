@@ -76,7 +76,18 @@ public class CurrencyManager {
     }
 
     public ItemStack createCurrencyItem(int amount) {
-        ItemStack stack = new ItemStack(material, amount);
+        return createCurrencyStack(material, amount);
+    }
+
+    public ItemStack createCurrencyBlock(int amount) {
+        if (!hasBlockForm()) {
+            return null;
+        }
+        return createCurrencyStack(blockMaterial, amount);
+    }
+
+    private ItemStack createCurrencyStack(Material mat, int amount) {
+        ItemStack stack = new ItemStack(mat, amount);
         ItemMeta meta = stack.getItemMeta();
         if (meta != null) {
             if (useName) {
@@ -93,7 +104,17 @@ public class CurrencyManager {
     public boolean isCurrencyItem(ItemStack stack) {
         if (stack == null || stack.getType() == Material.AIR) return false;
         if (stack.getType() != material) return false;
+        return matchesCurrencyMeta(stack);
+    }
 
+    public boolean isCurrencyBlock(ItemStack stack) {
+        if (!hasBlockForm()) return false;
+        if (stack == null || stack.getType() == Material.AIR) return false;
+        if (stack.getType() != blockMaterial) return false;
+        return matchesCurrencyMeta(stack);
+    }
+
+    private boolean matchesCurrencyMeta(ItemStack stack) {
         ItemMeta meta = stack.getItemMeta();
         if (useName) {
             if (meta == null || !meta.hasDisplayName()) return false;
@@ -122,11 +143,5 @@ public class CurrencyManager {
         }
 
         return true;
-    }
-
-    public boolean isCurrencyBlock(ItemStack stack) {
-        if (!hasBlockForm()) return false;
-        if (stack == null || stack.getType() == Material.AIR) return false;
-        return stack.getType() == blockMaterial;
     }
 }
