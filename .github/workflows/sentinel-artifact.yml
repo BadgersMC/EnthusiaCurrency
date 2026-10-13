@@ -1,8 +1,8 @@
 name: Sentinel artifact
 
 on:
-  pull_request:
-    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -15,12 +15,12 @@ jobs:
       - name: Check out exact PR head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Verify exact checkout
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD}"
 
       - name: Set up Java 21
