@@ -69,6 +69,11 @@ public class EnthusiaCurrencyPlugin extends JavaPlugin {
         instance = this;
 
         setupConfiguration();
+        if (!VaultBootstrap.isAvailable(Bukkit.getPluginManager())) {
+            getLogger().severe("Vault is unavailable or disabled! Disabling plugin.");
+            Bukkit.getPluginManager().disablePlugin(this);
+            return;
+        }
         if (!startStorage()) {
             return;
         }
@@ -238,20 +243,19 @@ public class EnthusiaCurrencyPlugin extends JavaPlugin {
     }
 
     private boolean setupVault() {
-        if (Bukkit.getPluginManager().getPlugin("Vault") == null) {
-            getLogger().severe("Vault not found! Disabling plugin.");
+        VaultBootstrap.Result result = VaultBootstrap.register(
+                this, balanceStorage, currencyManager,
+                Bukkit.getPluginManager(), Bukkit.getServicesManager());
+        if (!result.available()) {
+            getLogger().severe("Vault is unavailable or disabled! Disabling plugin.");
             Bukkit.getPluginManager().disablePlugin(this);
             return false;
         }
-
-        this.tokenEconomy = new TokenEconomy(this, balanceStorage);
-        Bukkit.getServicesManager().register(Economy.class, tokenEconomy, this, ServicePriority.Highest);
-
-        RegisteredServiceProvider<Economy> rsp = Bukkit.getServicesManager().getRegistration(Economy.class);
-        if (rsp == null || !(rsp.getProvider() instanceof TokenEconomy)) {
-            getLogger().warning("Another economy provider is registered. Make sure EnthusiaCurrency is the only one.");
-        } else {
+        this.tokenEconomy = result.provider();
+        if (result.ownsRegistration()) {
             getLogger().info("Registered EnthusiaCurrency as Vault economy provider.");
+        } else {
+            getLogger().warning("Another economy provider is registered. Make sure EnthusiaCurrency is the only one.");
         }
         return true;
     }

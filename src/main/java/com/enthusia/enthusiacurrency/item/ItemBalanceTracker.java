@@ -24,10 +24,12 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 public final class ItemBalanceTracker implements Listener {
 
     private final EnthusiaCurrencyPlugin plugin;
+    private final LongSupplier clock;
     private final Map<UUID, ItemBalanceSnapshot> snapshots = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> debounceTasks = new ConcurrentHashMap<>();
     private final Set<UUID> queuedAuditPlayers = ConcurrentHashMap.newKeySet();
@@ -42,7 +44,12 @@ public final class ItemBalanceTracker implements Listener {
     private boolean debugLogRepairs;
 
     public ItemBalanceTracker(EnthusiaCurrencyPlugin plugin) {
+        this(plugin, System::currentTimeMillis);
+    }
+
+    ItemBalanceTracker(EnthusiaCurrencyPlugin plugin, LongSupplier clock) {
         this.plugin = plugin;
+        this.clock = clock;
     }
 
     public void start() {
@@ -86,7 +93,9 @@ public final class ItemBalanceTracker implements Listener {
             return ItemBalanceSnapshot.empty(uuid, fallbackName);
         }
         plugin.getDebugMetrics().cacheHit();
-        if (isStale(snapshot)) {
+        // Reads must not reset a refresh already queued by reads or inventory changes.
+        // Check the actual task rather than dirty state so a failed scan can be retried.
+        if (isStale(snapshot) && !debounceTasks.containsKey(uuid)) {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null) {
                 markDirty(player, "stale-cache");
@@ -135,7 +144,7 @@ public final class ItemBalanceTracker implements Listener {
                 counted.enderChestCurrency(),
                 counted.shulkerCurrency(),
                 counted.totalCurrency(),
-                System.currentTimeMillis(),
+                clock.getAsLong(),
                 false,
                 false
         );
@@ -236,7 +245,7 @@ public final class ItemBalanceTracker implements Listener {
 
     private boolean isStale(ItemBalanceSnapshot snapshot) {
         return snapshot.lastScannedAtMillis() <= 0L
-                || System.currentTimeMillis() - snapshot.lastScannedAtMillis() > staleAfterMillis;
+                || clock.getAsLong() - snapshot.lastScannedAtMillis() > staleAfterMillis;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
